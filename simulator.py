@@ -136,6 +136,55 @@ SALARY_DEDUCTION_TABLE = [
 
 
 # ══════════════════════════════════════════════════════════════
+#  大垣市 国民健康保険料（令和7年度）
+# ══════════════════════════════════════════════════════════════
+# 所得割率：医療7.38% + 支援2.56% + 介護2.15%（40〜64歳）
+# 均等割：医療31,000 + 支援11,000 + 介護11,000（40〜64歳）
+# 平等割：医療20,400 + 支援7,200 + 介護5,500（40〜64歳）
+# 賦課限度額：医療66万 + 支援26万 + 介護17万
+
+KOKUHO_OGAKI = {
+    'iryo_shotoku_wari': 0.0738,
+    'shien_shotoku_wari': 0.0256,
+    'kaigo_shotoku_wari': 0.0215,
+    'iryo_kintou':  31000,
+    'shien_kintou': 11000,
+    'kaigo_kintou': 11000,
+    'iryo_heitou':  20400,
+    'shien_heitou':  7200,
+    'kaigo_heitou':  5500,
+    'iryo_limit':   660000,
+    'shien_limit':  260000,
+    'kaigo_limit':  170000,
+    'kiso_kojo':    430000,  # 国保基礎控除
+}
+
+def calc_kokuho_ogaki(annual_income, age=58):
+    """
+    大垣市国民健康保険料（1人加入・令和7年度）
+    annual_income: 事業所得（青色控除後）
+    age: 40〜64歳なら介護分あり
+    戻り値: (国保合計, 内訳dict)
+    """
+    k = KOKUHO_OGAKI
+    kijun = max(0, annual_income - k['kiso_kojo'])
+
+    iryo  = min(kijun * k['iryo_shotoku_wari'] + k['iryo_kintou'] + k['iryo_heitou'], k['iryo_limit'])
+    shien = min(kijun * k['shien_shotoku_wari'] + k['shien_kintou'] + k['shien_heitou'], k['shien_limit'])
+
+    if 40 <= age < 65:
+        kaigo = min(kijun * k['kaigo_shotoku_wari'] + k['kaigo_kintou'] + k['kaigo_heitou'], k['kaigo_limit'])
+    else:
+        kaigo = 0
+
+    total = iryo + shien + kaigo
+    return total, {'iryo': iryo, 'shien': shien, 'kaigo': kaigo}
+
+# 国民年金保険料（令和7年度）
+KOKUMIN_NENKIN_MONTHLY = 17510  # 円/月
+KOKUMIN_NENKIN_ANNUAL  = KOKUMIN_NENKIN_MONTHLY * 12  # 210,120円
+
+# ══════════════════════════════════════════════════════════════
 #  計算関数
 # ══════════════════════════════════════════════════════════════
 
@@ -274,21 +323,67 @@ def run_simulation(sales, corp_expenses, pearl_profit, gaichuu_hi,
                 d_a = calc_net_detail(s_a, health_rate, pension_rate, resident_rate)
 
                 if integrated:
-                    d_c = calc_net_detail(s_c, health_rate, pension_rate, resident_rate)
+                    if s_c < 1300000:
+                        # パターンA：役員報酬130万未満 → 扶養継続・社保ゼロ
+                        deduction_c = get_salary_deduction(s_c)
+                        taxable_c = max(0, s_c - deduction_c - 480000)
+                        i_tax_c, f_tax_c = get_income_tax(taxable_c)
+                        r_tax_c = taxable_c * resident_rate
+                        d_c = {
+                            'net': s_c - i_tax_c - r_tax_c,
+                            'health': 0, 'pension': 0, 'si_total': 0,
+                            'deduction': deduction_c, 'taxable': taxable_c,
+                            'income_tax': i_tax_c, 'fukko_tax': f_tax_c,
+                            'resident_tax': r_tax_c,
+                            'hyojun_kenpo': 0, 'hyojun_nenkin': 0,
+                            'kokuho': 0, 'kokumin_nenkin': 0,
+                            'fuyou': True,
+                        }
+                    else:
+                        # パターンB：役員報酬130万以上 → 社保加入（通常計算）
+                        d_c = calc_net_detail(s_c, health_rate, pension_rate, resident_rate)
+                        d_c['kokuho'] = 0
+                        d_c['kokumin_nenkin'] = 0
+                        d_c['fuyou'] = False
                 else:
                     # 非統合：パール利益＋外注費収入、青色控除65万・基礎控除48万
                     chikomun_income = pearl_profit + chikomun_extra
-                    p_income = max(0, chikomun_income - 650000 - 480000)
-                    i_tax, f_tax = get_income_tax(p_income)
-                    r_tax = p_income * resident_rate
-                    d_c = {
-                        'net': chikomun_income - i_tax - r_tax,
-                        'health': 0, 'pension': 0, 'si_total': 0,
-                        'deduction': 650000, 'taxable': p_income,
-                        'income_tax': i_tax, 'fukko_tax': f_tax,
-                        'resident_tax': r_tax,
-                        'hyojun_kenpo': 0, 'hyojun_nenkin': 0,
-                    }
+                    if chikomun_income < 1300000:
+                        # パターンC：130万未満 → 扶養継続・社保ゼロ
+                        p_income = max(0, chikomun_income - 650000 - 480000)
+                        i_tax, f_tax = get_income_tax(p_income)
+                        r_tax = p_income * resident_rate
+                        d_c = {
+                            'net': chikomun_income - i_tax - r_tax,
+                            'health': 0, 'pension': 0, 'si_total': 0,
+                            'deduction': 650000, 'taxable': p_income,
+                            'income_tax': i_tax, 'fukko_tax': f_tax,
+                            'resident_tax': r_tax,
+                            'hyojun_kenpo': 0, 'hyojun_nenkin': 0,
+                            'kokuho': 0, 'kokumin_nenkin': 0,
+                            'fuyou': True,
+                        }
+                    else:
+                        # パターンD：130万以上 → 国保＋国民年金加入
+                        # 事業所得ベースで国保計算（青色控除後の所得）
+                        jigyou_shotoku = max(0, chikomun_income - 650000)
+                        kokuho_total, _ = calc_kokuho_ogaki(jigyou_shotoku, age=58)
+                        kokumin_nenkin = KOKUMIN_NENKIN_ANNUAL
+                        si_total_d = kokuho_total + kokumin_nenkin
+                        p_income = max(0, jigyou_shotoku - si_total_d - 480000)
+                        i_tax, f_tax = get_income_tax(p_income)
+                        r_tax = p_income * resident_rate
+                        d_c = {
+                            'net': chikomun_income - si_total_d - i_tax - r_tax,
+                            'health': kokuho_total, 'pension': kokumin_nenkin,
+                            'si_total': si_total_d,
+                            'deduction': 650000, 'taxable': p_income,
+                            'income_tax': i_tax, 'fukko_tax': f_tax,
+                            'resident_tax': r_tax,
+                            'hyojun_kenpo': 0, 'hyojun_nenkin': 0,
+                            'kokuho': kokuho_total, 'kokumin_nenkin': kokumin_nenkin,
+                            'fuyou': False,
+                        }
 
                 total = d_a['net'] + d_c['net'] + c_cash
                 results.append({
@@ -310,6 +405,9 @@ def run_simulation(sales, corp_expenses, pearl_profit, gaichuu_hi,
                     'ちこむん所得税': int(d_c['income_tax']),
                     'ちこむん住民税': int(d_c['resident_tax']),
                     'ちこむん復興税': int(d_c['fukko_tax']),
+                    'ちこむん国保': int(d_c.get('kokuho', 0)),
+                    'ちこむん国民年金': int(d_c.get('kokumin_nenkin', 0)),
+                    'ちこむん扶養': bool(d_c.get('fuyou', False)),
                     '法人税': int(c_tax),
                     '法人経費_実効': int(eff_corp_exp),
                     '外注費': int(gaichuu_hi if not integrated else 0),
@@ -459,7 +557,10 @@ with tab_basis:
 • 住民税の均等割（年間約5,000円程度）は含まれていません<br>
 • 年末調整・確定申告による医療費控除・生命保険料控除等は考慮していません<br>
 • 法人税は概算です。地方法人税・法人住民税・法人事業税を含む実効税率は異なります<br>
-• 消費税は計算に含まれていません<br>
+• 売上は<strong>税抜金額</strong>を入力してください。消費税は計算に含まれていません<br>
+• 扶養判定の130万円はあくまで目安です。社会保険の扶養認定は加入する健保組合によって異なります。必ず会社の健保組合・税理士にご確認ください<br>
+• 国保料は大垣市令和7年度の料率で計算しています。他市区町村の場合は実際と異なります<br>
+• 国民年金保険料は令和7年度月額17,510円（年210,120円）で計算しています<br>
 • 結果は必ず税理士にご確認ください
 </div>
 """, unsafe_allow_html=True)
@@ -471,7 +572,7 @@ with tab_main:
     with col_input:
         st.markdown("### 📥 数字を入れる")
         sales_man = st.number_input(
-            "あきたん会社の売上（万円）",
+            "あきたん会社の売上（万円・税抜）",
             min_value=500, max_value=100000, value=1800, step=100, key="sales"
         )
         corp_exp_man = st.number_input(
@@ -586,32 +687,77 @@ with tab_main:
                 ), unsafe_allow_html=True)
 
             with c2:
+                c_fuyou = bool(best.get('ちこむん扶養', False))
+                c_income = int(best['ちこむん収入'])
+                c_it = int(best['ちこむん所得税'])
+                c_rt = int(best['ちこむん住民税'])
+                c_net = int(best['ちこむん手取り'])
+                c_kokuho = int(best.get('ちこむん国保', 0))
+                c_kokunen = int(best.get('ちこむん国民年金', 0))
+                c_kenpo = int(best.get('ちこむん健保', 0))
+                c_nenkin = int(best.get('ちこむん厚年', 0))
+
                 if integrated:
-                    c_label = "ちこむん報酬（役員）"
-                    c_sal = best['ちこむん報酬']
-                    st.markdown(detail_html(c_label, c_sal, best), unsafe_allow_html=True)
-                else:
-                    # 非統合：外注費＋パール利益の内訳を表示
-                    c_income = int(best['ちこむん収入'])
-                    c_it = int(best['ちこむん所得税'])
-                    c_rt = int(best['ちこむん住民税'])
-                    c_net = int(best['ちこむん手取り'])
-                    st.markdown(f"""
-                    <div class="result-card">
-                        <div class="label-text">ちこむん（個人事業・現状維持）</div>
-                        <div class="value-text">収入合計 ¥{c_income:,}</div>
-                        <div class="detail-text">
-                            パール利益：¥{int(pearl_profit):,}<br>
-                            外注費収入：¥{int(gaichuu_hi):,}<br>
-                            ────────────────<br>
-                            所得税（復興税込）：−¥{c_it:,}<br>
-                            住民税：−¥{c_rt:,}<br>
-                            ※社保は扶養または国保別途
+                    c_sal = int(best['ちこむん報酬'])
+                    if c_fuyou:
+                        # パターンA：役員・扶養継続
+                        st.markdown(f"""
+                        <div class="result-card">
+                            <div class="label-text">ちこむん（役員・扶養継続）</div>
+                            <div class="value-text">報酬 ¥{c_sal:,}</div>
+                            <div style="margin:4px 0"><span class="badge-yes">✅ 扶養継続</span></div>
+                            <div class="detail-text">
+                                社会保険：ゼロ（あきたん扶養内）<br>
+                                所得税（復興税込）：−¥{c_it:,}<br>
+                                住民税：−¥{c_rt:,}
+                            </div>
+                            <div class="label-text" style="margin-top:8px">手取り</div>
+                            <div class="value-text">¥{c_net:,}</div>
                         </div>
-                        <div class="label-text" style="margin-top:8px">手取り</div>
-                        <div class="value-text">¥{c_net:,}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                        """, unsafe_allow_html=True)
+                    else:
+                        # パターンB：役員・社保加入
+                        st.markdown(detail_html("ちこむん（役員・社保加入）", c_sal, best), unsafe_allow_html=True)
+                else:
+                    if c_fuyou:
+                        # パターンC：個人事業・扶養継続
+                        st.markdown(f"""
+                        <div class="result-card">
+                            <div class="label-text">ちこむん（個人事業・扶養継続）</div>
+                            <div class="value-text">収入合計 ¥{c_income:,}</div>
+                            <div style="margin:4px 0"><span class="badge-yes">✅ 扶養継続</span></div>
+                            <div class="detail-text">
+                                パール利益：¥{int(pearl_profit):,}<br>
+                                外注費収入：¥{int(gaichuu_hi):,}<br>
+                                ────────────────<br>
+                                社会保険：ゼロ（あきたん扶養内）<br>
+                                所得税（復興税込）：−¥{c_it:,}<br>
+                                住民税：−¥{c_rt:,}
+                            </div>
+                            <div class="label-text" style="margin-top:8px">手取り</div>
+                            <div class="value-text">¥{c_net:,}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        # パターンD：個人事業・国保＋国民年金
+                        st.markdown(f"""
+                        <div class="result-card">
+                            <div class="label-text">ちこむん（個人事業・国保加入）</div>
+                            <div class="value-text">収入合計 ¥{c_income:,}</div>
+                            <div style="margin:4px 0"><span class="badge-no">❌ 扶養外・国保加入</span></div>
+                            <div class="detail-text">
+                                パール利益：¥{int(pearl_profit):,}<br>
+                                外注費収入：¥{int(gaichuu_hi):,}<br>
+                                ────────────────<br>
+                                国民健康保険（大垣市）：−¥{c_kokuho:,}<br>
+                                国民年金：−¥{c_kokunen:,}<br>
+                                所得税（復興税込）：−¥{c_it:,}<br>
+                                住民税：−¥{c_rt:,}
+                            </div>
+                            <div class="label-text" style="margin-top:8px">手取り</div>
+                            <div class="value-text">¥{c_net:,}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
 
             # 法人留保（外注費の扱い明示）
             eff_exp = int(best['法人経費_実効'])
