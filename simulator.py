@@ -231,38 +231,55 @@ def calc_corp_tax(profit):
         tax = 2000000 + (profit - 8000000) * 0.34
     return tax, profit - tax
 
-def run_simulation(sales, corp_expenses, pearl_profit,
+def run_simulation(sales, corp_expenses, pearl_profit, gaichuu_hi,
                    health_rate, pension_rate, resident_rate, step):
-    """総当たりシミュレーション"""
-    results = []
-    limit = sales + pearl_profit - corp_expenses
-    if limit <= 0:
-        return None
+    """
+    総当たりシミュレーション
 
-    for s_a in range(3000000, min(50000001, int(limit) + 1), step):
-        for s_c in range(0, 15000001, step):
-            if (s_a + s_c) > limit:
-                break
-            for integrated in [True, False]:
-                cur_sales = sales + (pearl_profit if integrated else 0)
+    外注費（gaichuu_hi）の扱い：
+    ・統合（役員化）の場合：外注費ゼロ。法人経費は corp_expenses のみ。
+    ・非統合（現状）の場合：外注費が法人経費に加算され、
+                           同額がちこむんの個人事業収入に加算される。
+    """
+    results = []
+
+    for integrated in [True, False]:
+        # 統合/非統合で経費と売上を切り替え
+        if integrated:
+            eff_corp_exp = corp_expenses          # 外注費なし
+            chikomun_extra = 0                     # ちこむん追加収入なし
+        else:
+            eff_corp_exp = corp_expenses + gaichuu_hi  # 外注費を法人経費に加算
+            chikomun_extra = gaichuu_hi            # 同額がちこむん収入に
+
+        cur_sales = sales + (pearl_profit if integrated else 0)
+        limit = cur_sales - eff_corp_exp
+        if limit <= 0:
+            continue
+
+        for s_a in range(3000000, min(50000001, int(limit) + 1), step):
+            for s_c in range(0, 15000001, step):
                 cur_salary = s_a + (s_c if integrated else 0)
-                corp_profit = cur_sales - corp_expenses - cur_salary
+                if cur_salary > limit:
+                    break
+
+                corp_profit = cur_sales - eff_corp_exp - cur_salary
                 if corp_profit < 0:
                     continue
 
                 c_tax, c_cash = calc_corp_tax(corp_profit)
-
                 d_a = calc_net_detail(s_a, health_rate, pension_rate, resident_rate)
 
                 if integrated:
                     d_c = calc_net_detail(s_c, health_rate, pension_rate, resident_rate)
                 else:
-                    # 個人事業（青色控除65万、基礎控除48万）
-                    p_income = max(0, pearl_profit - 650000 - 480000)
+                    # 非統合：パール利益＋外注費収入、青色控除65万・基礎控除48万
+                    chikomun_income = pearl_profit + chikomun_extra
+                    p_income = max(0, chikomun_income - 650000 - 480000)
                     i_tax, f_tax = get_income_tax(p_income)
                     r_tax = p_income * resident_rate
                     d_c = {
-                        'net': pearl_profit - i_tax - r_tax,
+                        'net': chikomun_income - i_tax - r_tax,
                         'health': 0, 'pension': 0, 'si_total': 0,
                         'deduction': 650000, 'taxable': p_income,
                         'income_tax': i_tax, 'fukko_tax': f_tax,
@@ -279,6 +296,7 @@ def run_simulation(sales, corp_expenses, pearl_profit,
                     '法人留保': int(c_cash),
                     'あきたん手取り': int(d_a['net']),
                     'ちこむん手取り': int(d_c['net']),
+                    'ちこむん収入': int(s_c if integrated else pearl_profit + chikomun_extra),
                     'あきたん健保': int(d_a['health']),
                     'あきたん厚年': int(d_a['pension']),
                     'あきたん所得税': int(d_a['income_tax']),
@@ -290,6 +308,8 @@ def run_simulation(sales, corp_expenses, pearl_profit,
                     'ちこむん住民税': int(d_c['resident_tax']),
                     'ちこむん復興税': int(d_c['fukko_tax']),
                     '法人税': int(c_tax),
+                    '法人経費_実効': int(eff_corp_exp),
+                    '外注費': int(gaichuu_hi if not integrated else 0),
                     'あきたん標準報酬_健保': d_a['hyojun_kenpo'],
                     'あきたん標準報酬_厚年': d_a['hyojun_nenkin'],
                 })
@@ -336,14 +356,15 @@ with tab_settings:
         )
         city_name = st.text_input("市区町村名（表示用）", value="大垣市", key="city_name")
 
-    st.markdown("#### 計算精度（刻み幅）")
+    st.markdown("#### 役員報酬の探索刻み幅（計算精度）")
+    st.markdown('<p class="note-text">「何万円刻みで役員報酬の組み合わせを試すか」の設定です。<br>刻みが細かいほど最適解の精度が上がりますが、計算時間が長くなります。</p>', unsafe_allow_html=True)
     step_options = {
-        "粗い（20万刻み）〜0.1秒": 200000,
-        "標準（10万刻み）〜数秒": 100000,
-        "精密（5万刻み）〜十数秒": 50000,
-        "高精度（1万刻み）〜数分": 10000,
+        "粗い：20万円刻み（計算時間 〜0.1秒）": 200000,
+        "標準：10万円刻み（計算時間 〜数秒）": 100000,
+        "精密：5万円刻み（計算時間 〜十数秒）": 50000,
+        "高精度：1万円刻み（計算時間 〜数分）": 10000,
     }
-    step_label = st.selectbox("刻み幅", list(step_options.keys()),
+    step_label = st.selectbox("刻み幅を選ぶ", list(step_options.keys()),
                                index=1, key="step_label")
 
 # ── 計算根拠・税率表タブ ──────────────────────────────────
@@ -433,6 +454,15 @@ with tab_main:
             min_value=0, max_value=5000, value=10, step=10, key="pearl",
             help="ちこむんの個人事業利益（売上−仕入等）"
         )
+        gaichuu_man = st.number_input(
+            "外注費（万円）",
+            min_value=0, max_value=5000, value=100, step=1, key="gaichuu",
+            help="非統合（ちこむん個人事業）の場合のみ有効。\n法人経費に加算され、同額がちこむんの個人事業収入になります。\n統合（役員化）した場合は自動的にゼロになります。"
+        )
+        st.markdown(
+            '<p class="note-text">💡 外注費は非統合の場合のみ有効：法人経費に加算＆ちこむん収入に加算</p>',
+            unsafe_allow_html=True
+        )
 
         step_val = step_options[st.session_state.get("step_label", list(step_options.keys())[1])]
         h_rate = st.session_state.get("health_pct", 5.79) / 100
@@ -452,10 +482,12 @@ with tab_main:
     sales = sales_man * 10000
     corp_expenses = corp_exp_man * 10000
     pearl_profit = pearl_man * 10000
+    gaichuu_hi = gaichuu_man * 10000
 
     t_start = time.time()
     with st.spinner("計算中... ⚙️"):
-        df = run_simulation(sales, corp_expenses, pearl_profit, h_rate, p_rate, r_rate, step_val)
+        df = run_simulation(sales, corp_expenses, pearl_profit, gaichuu_hi,
+                            h_rate, p_rate, r_rate, step_val)
     elapsed = time.time() - t_start
 
     with col_result:
@@ -524,18 +556,46 @@ with tab_main:
                 ), unsafe_allow_html=True)
 
             with c2:
-                c_label = "ちこむん報酬（役員）" if integrated else "ちこむん（個人事業）"
-                c_sal = best['ちこむん報酬'] if integrated else pearl_profit
-                st.markdown(detail_html(c_label, c_sal, best), unsafe_allow_html=True)
+                if integrated:
+                    c_label = "ちこむん報酬（役員）"
+                    c_sal = best['ちこむん報酬']
+                    st.markdown(detail_html(c_label, c_sal, best), unsafe_allow_html=True)
+                else:
+                    # 非統合：外注費＋パール利益の内訳を表示
+                    c_income = int(best['ちこむん収入'])
+                    c_it = int(best['ちこむん所得税'])
+                    c_rt = int(best['ちこむん住民税'])
+                    c_net = int(best['ちこむん手取り'])
+                    st.markdown(f"""
+                    <div class="result-card">
+                        <div class="label-text">ちこむん（個人事業・現状維持）</div>
+                        <div class="value-text">収入合計 ¥{c_income:,}</div>
+                        <div class="detail-text">
+                            パール利益：¥{int(pearl_profit):,}<br>
+                            外注費収入：¥{int(gaichuu_hi):,}<br>
+                            ────────────────<br>
+                            所得税（復興税込）：−¥{c_it:,}<br>
+                            住民税：−¥{c_rt:,}<br>
+                            ※社保は扶養または国保別途
+                        </div>
+                        <div class="label-text" style="margin-top:8px">手取り</div>
+                        <div class="value-text">¥{c_net:,}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
 
-            # 法人留保
+            # 法人留保（外注費の扱い明示）
+            eff_exp = int(best['法人経費_実効'])
+            gaichuu_disp = int(best['外注費'])
             st.markdown(f"""
             <div class="result-card">
                 <div class="label-text">法人留保（税引後）</div>
                 <div class="value-text">¥{int(best['法人留保']):,}</div>
                 <div class="detail-text">
-                    法人利益（税前）：¥{int(best['法人留保']) + int(best['法人税']):,}　
-                    法人税：−¥{int(best['法人税']):,}
+                    法人利益（税前）：¥{int(best['法人留保']) + int(best['法人税']):,}<br>
+                    法人税：−¥{int(best['法人税']):,}<br>
+                    ────────────────<br>
+                    法人経費（役員報酬除く）：¥{eff_exp:,}
+                    {'　※外注費¥' + f'{gaichuu_disp:,}を含む' if gaichuu_disp > 0 else '　※外注費なし（統合）'}
                 </div>
             </div>
             """, unsafe_allow_html=True)
