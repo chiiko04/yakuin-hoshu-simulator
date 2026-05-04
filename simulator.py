@@ -257,9 +257,12 @@ def run_simulation(sales, corp_expenses, pearl_profit, gaichuu_hi,
         if limit <= 0:
             continue
 
+        # 非統合の場合はちこむん報酬ゼロ固定（s_cループ不要）
+        s_c_range = range(0, 15000001, step) if integrated else [0]
+
         for s_a in range(3000000, min(50000001, int(limit) + 1), step):
-            for s_c in range(0, 15000001, step):
-                cur_salary = s_a + (s_c if integrated else 0)
+            for s_c in s_c_range:
+                cur_salary = s_a + s_c
                 if cur_salary > limit:
                     break
 
@@ -421,6 +424,33 @@ with tab_basis:
     st.markdown("### 住民税")
     st.markdown(f'<p class="note-text">{st.session_state.get("city_name","大垣市")}：市民税6% + 県民税4% = 10%（均等割は別途）<br>本シミュレーターでは課税所得×10%で計算（均等割は含まない）</p>',
                 unsafe_allow_html=True)
+
+    st.markdown("### 💡 最適解のヒント（なぜその報酬額になるのか）")
+    st.markdown("""
+<div class="warn-text">
+<strong>① 法人税800万の壁</strong><br>
+法人利益が800万円を超えると法人税率が上がります（25%→34%）。<br>
+そのため「法人利益がちょうど800万円以下になるよう役員報酬に回す」のが基本戦略です。<br>
+<br>
+<strong>② 社会保険料の等級の壁（2人の報酬を非対称にする理由）</strong><br>
+社会保険料は月収に応じた「等級（階段）」で決まります。<br>
+例：440万（月収36.7万）→ 等級25（標準報酬36万）<br>
+　　455万（月収37.9万）→ 等級26（標準報酬38万）←社保が上がる<br>
+　　470万（月収39.2万）→ 等級26（標準報酬38万）←455万と同じ等級のまま<br>
+<br>
+つまり「440万+470万」は「455万+455万」と法人利益が同じでも、<br>
+440万側が1段下の等級になって社保が安くなる分だけ世帯手残りが多くなります。<br>
+<br>
+<strong>③ 夫婦で報酬額が違う結果が出た場合</strong><br>
+逆の配分（あきたん高・ちこむん低 / ちこむん高・あきたん低）でも<br>
+世帯合計手残りは同じになるケースがあります。<br>
+どちらの配分にするかは税理士さんと相談してください。<br>
+<br>
+<strong>④ 端数処理について</strong><br>
+実際の税務では課税所得の1,000円未満・所得税の100円未満の切り捨てがありますが、<br>
+本プログラムでは省略しています。数千円程度の誤差が生じる場合があります。
+</div>
+""", unsafe_allow_html=True)
 
     st.markdown("### ⚠️ 本シミュレーターの限界・注意事項")
     st.markdown("""
